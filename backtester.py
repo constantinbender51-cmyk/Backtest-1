@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import json
+import time
 from tqdm import tqdm
 from datetime import datetime
 from deepseek_client import DeepSeekClient
@@ -79,54 +80,54 @@ class Backtester:
         return ohlc_data
     
     def execute_trade(self, signal, current_price, timestamp):
-    """Execute a trade and show details"""
-    if signal['signal'] == 'BUY' and self.current_trade is None:
-        trade_amount = self.balance * TRADE_SIZE
-        btc_amount = trade_amount / current_price
-        
-        self.balance -= trade_amount * (1 + COMMISSION)
-        self.btc_balance += btc_amount
-        
-        self.current_trade = {
-            'type': 'LONG',
-            'entry_price': current_price,
-            'entry_time': timestamp,
-            'stop_price': signal['stop_price'],
-            'target_price': signal['target_price'],
-            'size': trade_amount,
-            'signal_confidence': signal['confidence']
-        }
-        
-        print(f"🎯 LONG executed at ${current_price:.2f}")
-        print(f"   ⛔ Stop: ${signal['stop_price']:.2f}")
-        print(f"   🎯 Target: ${signal['target_price']:.2f}")
-        print(f"   ✅ Confidence: {signal['confidence']}%")
-        print(f"   💡 Reason: {signal['reason'][:100]}...")
-        print("-" * 50)
-        
-    elif signal['signal'] == 'SELL' and self.current_trade is None:
-        trade_amount = self.balance * TRADE_SIZE
-        btc_amount = trade_amount / current_price
-        
-        self.balance -= trade_amount * COMMISSION
-        self.btc_balance -= btc_amount
-        
-        self.current_trade = {
-            'type': 'SHORT',
-            'entry_price': current_price,
-            'entry_time': timestamp,
-            'stop_price': signal['stop_price'],
-            'target_price': signal['target_price'],
-            'size': trade_amount,
-            'signal_confidence': signal['confidence']
-        }
-        
-        print(f"🎯 SHORT executed at ${current_price:.2f}")
-        print(f"   ⛔ Stop: ${signal['stop_price']:.2f}")
-        print(f"   🎯 Target: ${signal['target_price']:.2f}")
-        print(f"   ✅ Confidence: {signal['confidence']}%")
-        print(f"   💡 Reason: {signal['reason'][:100]}...")
-        print("-" * 50)
+        """Execute a trade and show details"""
+        if signal['signal'] == 'BUY' and self.current_trade is None:
+            trade_amount = self.balance * TRADE_SIZE
+            btc_amount = trade_amount / current_price
+            
+            self.balance -= trade_amount * (1 + COMMISSION)
+            self.btc_balance += btc_amount
+            
+            self.current_trade = {
+                'type': 'LONG',
+                'entry_price': current_price,
+                'entry_time': timestamp,
+                'stop_price': signal['stop_price'],
+                'target_price': signal['target_price'],
+                'size': trade_amount,
+                'signal_confidence': signal['confidence']
+            }
+            
+            print(f"🎯 LONG executed at ${current_price:.2f}")
+            print(f"   ⛔ Stop: ${signal['stop_price']:.2f}")
+            print(f"   🎯 Target: ${signal['target_price']:.2f}")
+            print(f"   ✅ Confidence: {signal['confidence']}%")
+            print(f"   💡 Reason: {signal['reason'][:100]}...")
+            print("-" * 50)
+            
+        elif signal['signal'] == 'SELL' and self.current_trade is None:
+            trade_amount = self.balance * TRADE_SIZE
+            btc_amount = trade_amount / current_price
+            
+            self.balance -= trade_amount * COMMISSION
+            self.btc_balance -= btc_amount
+            
+            self.current_trade = {
+                'type': 'SHORT',
+                'entry_price': current_price,
+                'entry_time': timestamp,
+                'stop_price': signal['stop_price'],
+                'target_price': signal['target_price'],
+                'size': trade_amount,
+                'signal_confidence': signal['confidence']
+            }
+            
+            print(f"🎯 SHORT executed at ${current_price:.2f}")
+            print(f"   ⛔ Stop: ${signal['stop_price']:.2f}")
+            print(f"   🎯 Target: ${signal['target_price']:.2f}")
+            print(f"   ✅ Confidence: {signal['confidence']}%")
+            print(f"   💡 Reason: {signal['reason'][:100]}...")
+            print("-" * 50)
         
     def check_exit_conditions(self, current_price, timestamp):
         """Check if current trade should be exited"""
@@ -154,106 +155,106 @@ class Backtester:
         return False
     
     def exit_trade(self, exit_price, timestamp, exit_reason):
-    """Exit current trade and show results"""
-    if self.current_trade is None:
-        return
-    
-    trade = self.current_trade
-    
-    if trade['type'] == 'LONG':
-        exit_value = self.btc_balance * exit_price
-        pnl = exit_value - trade['size']
-        pnl_percent = (pnl / trade['size']) * 100
+        """Exit current trade and show results"""
+        if self.current_trade is None:
+            return
         
-        self.balance += exit_value * (1 - COMMISSION)
-        self.btc_balance = 0
+        trade = self.current_trade
         
-    elif trade['type'] == 'SHORT':
-        buyback_cost = abs(self.btc_balance) * exit_price
-        pnl = trade['size'] - buyback_cost
-        pnl_percent = (pnl / trade['size']) * 100
+        if trade['type'] == 'LONG':
+            exit_value = self.btc_balance * exit_price
+            pnl = exit_value - trade['size']
+            pnl_percent = (pnl / trade['size']) * 100
+            
+            self.balance += exit_value * (1 - COMMISSION)
+            self.btc_balance = 0
+            
+        elif trade['type'] == 'SHORT':
+            buyback_cost = abs(self.btc_balance) * exit_price
+            pnl = trade['size'] - buyback_cost
+            pnl_percent = (pnl / trade['size']) * 100
+            
+            self.balance += trade['size'] - buyback_cost
+            self.btc_balance = 0
         
-        self.balance += trade['size'] - buyback_cost
-        self.btc_balance = 0
-    
-    # Record trade
-    trade_record = {
-        'entry_time': trade['entry_time'],
-        'exit_time': timestamp,
-        'type': trade['type'],
-        'entry_price': trade['entry_price'],
-        'exit_price': exit_price,
-        'size': trade['size'],
-        'pnl': pnl,
-        'pnl_percent': pnl_percent,
-        'exit_reason': exit_reason,
-        'duration': (timestamp - trade['entry_time']).total_seconds() / 3600,
-        'signal_confidence': trade.get('signal_confidence', 0)
-    }
-    
-    self.trades.append(trade_record)
-    
-    print(f"📊 Trade CLOSED: {exit_reason}")
-    print(f"   🔄 Type: {trade['type']}")
-    print(f"   📈 Entry: ${trade['entry_price']:.2f}")
-    print(f"   📉 Exit: ${exit_price:.2f}")
-    print(f"   💰 PnL: ${pnl:+.2f} ({pnl_percent:+.2f}%)")
-    print(f"   ⏱️  Duration: {trade_record['duration']:.1f}h")
-    print(f"   ✅ Signal Confidence: {trade.get('signal_confidence', 0)}%")
-    print("=" * 50)
-    
-    self.current_trade = None
+        # Record trade
+        trade_record = {
+            'entry_time': trade['entry_time'],
+            'exit_time': timestamp,
+            'type': trade['type'],
+            'entry_price': trade['entry_price'],
+            'exit_price': exit_price,
+            'size': trade['size'],
+            'pnl': pnl,
+            'pnl_percent': pnl_percent,
+            'exit_reason': exit_reason,
+            'duration': (timestamp - trade['entry_time']).total_seconds() / 3600,
+            'signal_confidence': trade.get('signal_confidence', 0)
+        }
+        
+        self.trades.append(trade_record)
+        
+        print(f"📊 Trade CLOSED: {exit_reason}")
+        print(f"   🔄 Type: {trade['type']}")
+        print(f"   📈 Entry: ${trade['entry_price']:.2f}")
+        print(f"   📉 Exit: ${exit_price:.2f}")
+        print(f"   💰 PnL: ${pnl:+.2f} ({pnl_percent:+.2f}%)")
+        print(f"   ⏱️  Duration: {trade_record['duration']:.1f}h")
+        print(f"   ✅ Signal Confidence: {trade.get('signal_confidence', 0)}%")
+        print("=" * 50)
+        
+        self.current_trade = None
     
     def run_backtest(self, df):
-    """Run backtest for every candle with clean trade output"""
-    print("🚀 Starting massive backtest with 70,000 API calls...")
-    print(f"📊 Data range: {df.index[0]} to {df.index[-1]}")
-    print(f"🕯️  Total candles to process: {len(df) - LOOKBACK_WINDOW}")
-    print("=" * 60)
-    
-    start_time = time.time()
-    api_call_count = 0
-    trade_count = 0
-    
-    # Disable tqdm for clean output
-    for i in range(LOOKBACK_WINDOW, len(df)):
-        current_row = df.iloc[i]
-        current_price = current_row['close']
-        timestamp = current_row.name
+        """Run backtest for every candle with clean trade output"""
+        print("🚀 Starting massive backtest with 70,000 API calls...")
+        print(f"📊 Data range: {df.index[0]} to {df.index[-1]}")
+        print(f"🕯️  Total candles to process: {len(df) - LOOKBACK_WINDOW}")
+        print("=" * 60)
         
-        # Check exit conditions first (this will print trade closures)
-        exit_happened = self.check_exit_conditions(current_price, timestamp)
+        start_time = time.time()
+        api_call_count = 0
+        trade_count = 0
         
-        # If no active trade, get new signal and execute
-        if self.current_trade is None:
-            ohlc_data = self.prepare_ohlc_data(df, i)
-            signal = self.deepseek_client.get_trading_signal(ohlc_data)
-            api_call_count += 1
+        # Disable tqdm for clean output
+        for i in range(LOOKBACK_WINDOW, len(df)):
+            current_row = df.iloc[i]
+            current_price = current_row['close']
+            timestamp = current_row.name
             
-            # Only show API call number and signal
-            if api_call_count % 10 == 0:  # Show every 10th API call
-                print(f"📡 API Call {api_call_count}: {signal['signal']} signal")
+            # Check exit conditions first (this will print trade closures)
+            exit_happened = self.check_exit_conditions(current_price, timestamp)
             
-            self.execute_trade(signal, current_price, timestamp)
-            if self.current_trade is not None:
-                trade_count += 1
-    
-    # Close any open trade at the end
-    if self.current_trade is not None:
-        self.exit_trade(df.iloc[-1]['close'], df.index[-1], 'END_OF_DATA')
-    
-    end_time = time.time()
-    total_time = end_time - start_time
-    hours = total_time / 3600
-    
-    print("=" * 60)
-    print("🏁 Backtest Completed!")
-    print("=" * 60)
-    print(f"⏰ Total time: {hours:.2f} hours")
-    print(f"📞 API calls made: {api_call_count}")
-    print(f"💰 Trades executed: {trade_count}")
-    print(f"💵 Final balance: ${self.balance:,.2f}")
-    print(f"📈 PnL: ${self.balance - self.initial_balance:,.2f}")
+            # If no active trade, get new signal and execute
+            if self.current_trade is None:
+                ohlc_data = self.prepare_ohlc_data(df, i)
+                signal = self.deepseek_client.get_trading_signal(ohlc_data)
+                api_call_count += 1
+                
+                # Only show API call number and signal
+                if api_call_count % 10 == 0:  # Show every 10th API call
+                    print(f"📡 API Call {api_call_count}: {signal['signal']} signal")
+                
+                self.execute_trade(signal, current_price, timestamp)
+                if self.current_trade is not None:
+                    trade_count += 1
+        
+        # Close any open trade at the end
+        if self.current_trade is not None:
+            self.exit_trade(df.iloc[-1]['close'], df.index[-1], 'END_OF_DATA')
+        
+        end_time = time.time()
+        total_time = end_time - start_time
+        hours = total_time / 3600
+        
+        print("=" * 60)
+        print("🏁 Backtest Completed!")
+        print("=" * 60)
+        print(f"⏰ Total time: {hours:.2f} hours")
+        print(f"📞 API calls made: {api_call_count}")
+        print(f"💰 Trades executed: {trade_count}")
+        print(f"💵 Final balance: ${self.balance:,.2f}")
+        print(f"📈 PnL: ${self.balance - self.initial_balance:,.2f}")
     
     def generate_stats(self):
         """Generate performance statistics"""
@@ -295,6 +296,3 @@ class Backtester:
         print(f"Win Rate: {stats['win_rate']:.1f}%")
         print(f"Signals Processed: {stats['signals_processed']}")
         print(f"API Errors: {stats['api_errors']}")
-
-# Add missing import
-import time
