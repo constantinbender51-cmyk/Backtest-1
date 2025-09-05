@@ -22,10 +22,13 @@ class Backtester:
         print(f"Loading data from: {filepath}")
         
         # Load the CSV with the correct column names
-        try:
-            df = pd.read_csv(filepath, sep='\t')
-        except:
+        df = pd.read_csv(filepath, sep='\t')  # Use tab separator if that's what your file uses
+        
+        # If tab separator doesn't work, try comma
+        if len(df.columns) == 1:
             df = pd.read_csv(filepath)
+        
+        print(f"Columns found: {df.columns.tolist()}")
         
         # Rename columns to match expected format
         column_mapping = {
@@ -54,6 +57,8 @@ class Backtester:
         df = df.dropna()
         
         print(f"Successfully loaded {len(df)} candles")
+        print(f"Data types:\n{df.dtypes}")
+        
         return df
     
     def prepare_ohlc_data(self, df, current_index):
