@@ -22,12 +22,8 @@ class Backtester:
         """Load OHLC data from CSV with Binance format"""
         print(f"Loading data from: {filepath}")
         
-        # Load the CSV with the correct column names
-        df = pd.read_csv(filepath, sep='\t')  # Use tab separator if that's what your file uses
-        
-        # If tab separator doesn't work, try comma
-        if len(df.columns) == 1:
-            df = pd.read_csv(filepath)
+        # Load the CSV with comma separator
+        df = pd.read_csv(filepath, sep=',')
         
         print(f"Columns found: {df.columns.tolist()}")
         
