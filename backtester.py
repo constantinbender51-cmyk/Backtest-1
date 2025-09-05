@@ -16,10 +16,47 @@ class Backtester:
         self.current_trade = None
         
     def load_data(self, filepath):
-        """Load OHLC data from CSV"""
-        df = pd.read_csv(filepath)
+        """Load OHLC data from CSV with Binance format"""
+        print(f"Loading data from: {filepath}")
+        
+        # Load the CSV with the correct column names
+        df = pd.read_csv(filepath, sep='\t')  # Use tab separator if that's what your file uses
+        
+        # If tab separator doesn't work, try comma
+        if len(df.columns) == 1:
+            df = pd.read_csv(filepath)
+        
+        print(f"Columns found: {df.columns.tolist()}")
+        
+        # Rename columns to match expected format
+        column_mapping = {
+            'open_time': 'timestamp',
+            'open': 'open',
+            'high': 'high', 
+            'low': 'low',
+            'close': 'close',
+            'volume': 'volume'
+        }
+        
+        # Keep only the columns we need and rename them
+        df = df[['open_time', 'open', 'high', 'low', 'close', 'volume']].copy()
+        df = df.rename(columns=column_mapping)
+        
+        # Convert timestamp
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         df.set_index('timestamp', inplace=True)
+        
+        # Convert numeric columns
+        numeric_cols = ['open', 'high', 'low', 'close', 'volume']
+        for col in numeric_cols:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        
+        # Drop any rows with NaN values
+        df = df.dropna()
+        
+        print(f"Successfully loaded {len(df)} candles")
+        print(f"Data types:\n{df.dtypes}")
+        
         return df
     
     def prepare_ohlc_data(self, df, current_index):
@@ -60,11 +97,15 @@ class Backtester:
                 'size': trade_amount
             }
             
+            print(f"📈 BUY signal executed at ${current_price:.2f}")
+            print(f"   Stop: ${signal['stop_price']:.2f}, Target: ${signal['target_price']:.2f}")
+            print(f"   Confidence: {signal['confidence']}%, Reason: {signal['reason']}")
+            
         elif signal['signal'] == 'SELL' and self.current_trade is None:
             # For short selling, we'd need margin trading setup
             # For simplicity, we'll just hold in this case
-            pass
-    
+            print(f"📉 SELL signal received but short selling not implemented (HOLDING)")
+            
     def check_exit_conditions(self, current_price, timestamp):
         """Check if current trade should be exited"""
         if self.current_trade is None:
@@ -103,7 +144,7 @@ class Backtester:
             self.btc_balance = 0
             
             # Record trade
-            self.trades.append({
+            trade_record = {
                 'entry_time': trade['entry_time'],
                 'exit_time': timestamp,
                 'type': trade['type'],
@@ -114,13 +155,21 @@ class Backtester:
                 'pnl_percent': pnl_percent,
                 'exit_reason': exit_reason,
                 'duration': (timestamp - trade['entry_time']).total_seconds() / 3600  # hours
-            })
+            }
+            
+            self.trades.append(trade_record)
+            
+            print(f"📊 Trade closed: {exit_reason}")
+            print(f"   Entry: ${trade['entry_price']:.2f}, Exit: ${exit_price:.2f}")
+            print(f"   PnL: ${pnl:.2f} ({pnl_percent:.2f}%)")
+            print(f"   Duration: {trade_record['duration']:.1f} hours")
         
         self.current_trade = None
     
     def run_backtest(self, df):
         """Run the complete backtest"""
         print("Starting backtest...")
+        print(f"Data range: {df.index[0]} to {df.index[-1]}")
         
         for i in tqdm(range(LOOKBACK_WINDOW, len(df)), desc="Processing candles"):
             current_row = df.iloc[i]
@@ -199,10 +248,14 @@ class Backtester:
         print(f"Final Balance: ${stats['final_balance']:,.2f}")
         print(f"Total Return: ${stats['total_return_usdt']:,.2f} ({stats['total_return_percent']:.2f}%)")
         print(f"Total Trades: {stats['total_trades']}")
+        print(f"Winning Trades: {stats['winning_trades']}")
+        print(f"Losing Trades: {stats['losing_trades']}")
         print(f"Win Rate: {stats['win_rate']:.1f}%")
         print(f"Profit Factor: {stats['profit_factor']:.2f}")
         print(f"Avg Win: ${stats['avg_win']:,.2f}")
         print(f"Avg Loss: ${stats['avg_loss']:,.2f}")
+        print(f"Largest Win: ${stats['largest_win']:,.2f}")
+        print(f"Largest Loss: ${stats['largest_loss']:,.2f}")
         print(f"Avg Trade Duration: {stats['avg_trade_duration_hours']:.1f} hours")
         
         print("\nQuarterly Returns:")
