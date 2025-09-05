@@ -18,22 +18,28 @@ class Backtester:
         self.api_errors = 0
         
     def load_data(self, filepath):
-    """Load Binance-formatted CSV data with tab separators"""
-    print(f"Loading data from: {filepath}")
-    
-    try:
-        # Read CSV with tab separator
-        df = pd.read_csv(filepath, sep='\t')
-        print(f"Raw columns: {df.columns.tolist()}")
-        print(f"Data shape: {df.shape}")
+        """Load OHLC data from CSV with Binance format"""
+        print(f"Loading data from: {filepath}")
         
-        # Display first few rows for verification
-        print("First 3 rows:")
-        print(df.head(3))
+        # Load the CSV with the correct column names
+        try:
+            df = pd.read_csv(filepath, sep='\t')
+        except:
+            df = pd.read_csv(filepath)
         
-        # Keep only the columns we need and rename timestamp
+        # Rename columns to match expected format
+        column_mapping = {
+            'open_time': 'timestamp',
+            'open': 'open',
+            'high': 'high', 
+            'low': 'low',
+            'close': 'close',
+            'volume': 'volume'
+        }
+        
+        # Keep only the columns we need and rename them
         df = df[['open_time', 'open', 'high', 'low', 'close', 'volume']].copy()
-        df = df.rename(columns={'open_time': 'timestamp'})
+        df = df.rename(columns=column_mapping)
         
         # Convert timestamp
         df['timestamp'] = pd.to_datetime(df['timestamp'])
@@ -48,35 +54,7 @@ class Backtester:
         df = df.dropna()
         
         print(f"Successfully loaded {len(df)} candles")
-        print(f"Date range: {df.index[0]} to {df.index[-1]}")
-        print(f"Data types:\n{df.dtypes}")
-        
         return df
-        
-    except Exception as e:
-        print(f"Error loading CSV: {e}")
-        print("Trying alternative loading methods...")
-        
-        # Fallback: try different separators
-        try:
-            df = pd.read_csv(filepath, sep=',')
-            print(f"Comma separator worked. Columns: {df.columns.tolist()}")
-            df = df[['open_time', 'open', 'high', 'low', 'close', 'volume']].copy()
-            df = df.rename(columns={'open_time': 'timestamp'})
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
-            df.set_index('timestamp', inplace=True)
-            return df
-        except:
-            try:
-                df = pd.read_csv(filepath, sep=None, engine='python')
-                print(f"Auto separator worked. Columns: {df.columns.tolist()}")
-                df = df[['open_time', 'open', 'high', 'low', 'close', 'volume']].copy()
-                df = df.rename(columns={'open_time': 'timestamp'})
-                df['timestamp'] = pd.to_datetime(df['timestamp'])
-                df.set_index('timestamp', inplace=True)
-                return df
-            except Exception as e2:
-                raise Exception(f"All loading methods failed: {e2}")
     
     def prepare_ohlc_data(self, df, current_index):
         """Prepare OHLC data for the current window - optimized version"""
