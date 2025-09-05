@@ -206,55 +206,82 @@ class Backtester:
         self.current_trade = None
     
     def run_backtest(self, df):
-        """Run backtest for every candle with clean trade output"""
+        """Run backtest for every candle with detailed progress tracking"""
         print("🚀 Starting massive backtest with 70,000 API calls...")
         print(f"📊 Data range: {df.index[0]} to {df.index[-1]}")
-        print(f"🕯️  Total candles to process: {len(df) - LOOKBACK_WINDOW}")
+        total_candles = len(df) - LOOKBACK_WINDOW
+        print(f"🕯️  Total candles to process: {total_candles}")
         print("=" * 60)
-        
+    
         start_time = time.time()
         api_call_count = 0
         trade_count = 0
-        
-        # Disable tqdm for clean output
+        last_update_time = time.time()
+    
+        # Process each candle
         for i in range(LOOKBACK_WINDOW, len(df)):
             current_row = df.iloc[i]
             current_price = current_row['close']
             timestamp = current_row.name
+            candle_number = i - LOOKBACK_WINDOW + 1
+        
+            # Show progress every 100 candles or every 30 seconds
+            current_time = time.time()
+            if candle_number % 100 == 0 or current_time - last_update_time >= 30:
+                elapsed = current_time - start_time
+                candles_per_second = candle_number / elapsed if elapsed > 0 else 0
+                estimated_total = elapsed / candle_number * total_candles if candle_number > 0 else 0
+                remaining = estimated_total - elapsed
             
-            # Check exit conditions first (this will print trade closures)
+                print(f"📊 Candle {candle_number}/{total_candles} "
+                      f"({candle_number/total_candles*100:.1f}%) - "
+                      f"Elapsed: {elapsed:.0f}s - "
+                      f"ETA: {remaining:.0f}s - "
+                      f"Speed: {candles_per_second:.2f} candles/s - "
+                      f"API Calls: {api_call_count} - "
+                      f"Trades: {trade_count}")
+                last_update_time = current_time
+        
+            # Check exit conditions first
             exit_happened = self.check_exit_conditions(current_price, timestamp)
-            
+        
             # If no active trade, get new signal and execute
             if self.current_trade is None:
                 ohlc_data = self.prepare_ohlc_data(df, i)
                 signal = self.deepseek_client.get_trading_signal(ohlc_data)
                 api_call_count += 1
-                
-                # Only show API call number and signal
-                if api_call_count % 10 == 0:  # Show every 10th API call
-                    print(f"📡 API Call {api_call_count}: {signal['signal']} signal")
-                
+            
+                # Show API call progress every 10 calls
+                if api_call_count % 10 == 0:
+                    elapsed = time.time() - start_time
+                    print(f"📡 API Call {api_call_count}: {signal['signal']} signal "
+                          f"(Candle {candle_number}, {elapsed:.0f}s elapsed)")
+            
                 self.execute_trade(signal, current_price, timestamp)
                 if self.current_trade is not None:
                     trade_count += 1
-        
+    
         # Close any open trade at the end
         if self.current_trade is not None:
             self.exit_trade(df.iloc[-1]['close'], df.index[-1], 'END_OF_DATA')
-        
+    
         end_time = time.time()
         total_time = end_time - start_time
         hours = total_time / 3600
-        
+        minutes = total_time / 60
+    
         print("=" * 60)
         print("🏁 Backtest Completed!")
         print("=" * 60)
-        print(f"⏰ Total time: {hours:.2f} hours")
+        print(f"⏰ Total time: {total_time:.0f} seconds ({minutes:.1f} minutes, {hours:.2f} hours)")
         print(f"📞 API calls made: {api_call_count}")
         print(f"💰 Trades executed: {trade_count}")
+        print(f"📊 Candles processed: {total_candles}")
+        print(f"⚡ Processing speed: {total_candles/total_time:.2f} candles/second")
+        print(f"📈 API call rate: {api_call_count/total_time:.2f} calls/second")
         print(f"💵 Final balance: ${self.balance:,.2f}")
-        print(f"📈 PnL: ${self.balance - self.initial_balance:,.2f}")
+        print(f"💰 PnL: ${self.balance - self.initial_balance:,.2f}")
+        print(f"📊 Return: {(self.balance - self.initial_balance)/self.initial_balance*100:.2f}%")
     
     def generate_stats(self):
         """Generate performance statistics"""
