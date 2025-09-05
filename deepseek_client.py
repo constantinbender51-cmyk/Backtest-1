@@ -11,17 +11,20 @@ class DeepSeekClient:
             "Content-Type": "application/json"
         }
         self.last_call_time = 0
-        self.min_interval = 1.0  # 1 second between calls
+        self.min_interval = 2.0  # 2 seconds between calls (30 calls/minute)
+        self.total_calls = 0
+        self.failed_calls = 0
     
     def get_trading_signal(self, ohlc_data):
-        """Get trading signal from DeepSeek API with simple rate limiting"""
+        """Get trading signal from DeepSeek API with basic monitoring"""
         
-        # Simple rate limiting
+        # Rate limiting
         current_time = time.time()
         elapsed = current_time - self.last_call_time
         if elapsed < self.min_interval:
             time.sleep(self.min_interval - elapsed)
         self.last_call_time = time.time()
+        self.total_calls += 1
         
         prompt = f"""Analyze the following BTC/USDT hourly OHLC data and generate a trading signal.
         Respond with ONLY a JSON object containing: signal (BUY|SELL|HOLD), stop_price, target_price, 
@@ -56,10 +59,13 @@ class DeepSeekClient:
             json_end = content.rfind('}') + 1
             json_str = content[json_start:json_end]
             
-            return json.loads(json_str)
+            signal_data = json.loads(json_str)
+            print(f"✅ API call {self.total_calls}: {signal_data['signal']} signal")
+            return signal_data
             
         except Exception as e:
-            print(f"Error calling DeepSeek API: {e}")
+            self.failed_calls += 1
+            print(f"❌ API call {self.total_calls} failed: {e}")
             return {
                 "signal": "HOLD",
                 "stop_price": None,
@@ -67,3 +73,12 @@ class DeepSeekClient:
                 "confidence": 0,
                 "reason": "API Error"
             }
+    
+    def get_stats(self):
+        """Get API usage statistics"""
+        success_rate = ((self.total_calls - self.failed_calls) / self.total_calls * 100) if self.total_calls > 0 else 0
+        return {
+            "total_calls": self.total_calls,
+            "failed_calls": self.failed_calls,
+            "success_rate": success_rate
+        }
