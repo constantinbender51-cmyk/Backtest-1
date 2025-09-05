@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import json
 import time
-import os
+from tqdm import tqdm
 from datetime import datetime
 from deepseek_client import DeepSeekClient
 from config import INITIAL_BALANCE, TRADE_SIZE, COMMISSION, LOOKBACK_WINDOW
@@ -14,179 +14,224 @@ class Backtester:
         self.balance = INITIAL_BALANCE
         self.btc_balance = 0
         self.trades = []
-        self.open_trades = []
+        self.open_trades = []  # List of active trades for parallel trading
         self.signals_processed = 0
         self.api_errors = 0
-        self.checkpoint_interval = 1000
-        self.checkpoint_file = "backtest_checkpoint.json"
         
     def load_data(self, filepath):
-        """Load OHLC data from CSV"""
+        """Load OHLC data from CSV with Binance format"""
         print(f"Loading data from: {filepath}")
         
-        # Read with space separator
-        df = pd.read_csv(filepath, sep='\s+', engine='python')
+        # Load the CSV with the correct column names
+        df = pd.read_csv(filepath, sep='\t')  # Use tab separator if that's what your file uses
         
-        # Keep only needed columns and rename
+        # If tab separator doesn't work, try comma
+        if len(df.columns) == 1:
+            df = pd.read_csv(filepath)
+        
+        print(f"Columns found: {df.columns.tolist()}")
+        
+        # Rename columns to match expected format
+        column_mapping = {
+            'open_time': 'timestamp',
+            'open': 'open',
+            'high': 'high', 
+            'low': 'low',
+            'close': 'close',
+            'volume': 'volume'
+        }
+        
+        # Keep only the columns we need and rename them
         df = df[['open_time', 'open', 'high', 'low', 'close', 'volume']].copy()
-        df = df.rename(columns={'open_time': 'timestamp'})
+        df = df.rename(columns=column_mapping)
         
-        # Convert timestamp and set index
+        # Convert timestamp
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         df.set_index('timestamp', inplace=True)
         
         # Convert numeric columns
-        for col in ['open', 'high', 'low', 'close', 'volume']:
+        numeric_cols = ['open', 'high', 'low', 'close', 'volume']
+        for col in numeric_cols:
             df[col] = pd.to_numeric(df[col], errors='coerce')
         
+        # Drop any rows with NaN values
         df = df.dropna()
         
         print(f"Successfully loaded {len(df)} candles")
-        print(f"Date range: {df.index[0]} to {df.index[-1]}")
+        print(f"Data types:\n{df.dtypes}")
         
         return df
     
     def prepare_ohlc_data(self, df, current_index):
-        """Prepare OHLC data for API"""
+        """Prepare OHLC data for the current window - optimized version"""
         start_idx = max(0, current_index - LOOKBACK_WINDOW)
         window_data = df.iloc[start_idx:current_index + 1]
         
-        ohlc_data = []
-        for _, row in window_data.iterrows():
-            ohlc_data.append({
-                "timestamp": row.name.isoformat(),
-                "open": float(row['open']),
-                "high": float(row['high']),
-                "low": float(row['low']),
-                "close": float(row['close']),
-                "volume": float(row['volume'])
-            })
+        # Use list comprehension for faster processing
+        ohlc_data = [{
+            "timestamp": row.name.isoformat(),
+            "open": float(row['open']),
+            "high": float(row['high']),
+            "low": float(row['low']),
+            "close": float(row['close']),
+            "volume": float(row['volume'])
+        } for _, row in window_data.iterrows()]
         
         return ohlc_data
     
     def run_backtest(self, df):
-        """Run long-term backtest with checkpointing"""
-        print("🚀 STARTING 7-DAY BACKTEST - TRADING EVERY SIGNAL!")
-        print("⭐ This will take approximately 7 days to complete")
-        print("💾 Checkpointing enabled - progress will be saved regularly")
-        print("⏰ 24-hour time limit enabled for all trades")
+        """Run backtest with parallel trading - every signal is traded"""
+        print("🚀 Starting parallel backtest - trading every signal!")
+        print(f"📊 Data range: {df.index[0]} to {df.index[-1]}")
+        total_candles = len(df) - LOOKBACK_WINDOW
+        print(f"🕯️  Total candles to process: {total_candles}")
         print("=" * 60)
         
-        total_candles = len(df) - LOOKBACK_WINDOW
         start_time = time.time()
-        start_index = LOOKBACK_WINDOW
+        api_call_count = 0
+        trade_count = 0
+        last_update_time = time.time()
         
-        # Load checkpoint if exists
-        if os.path.exists(self.checkpoint_file):
-            start_index = self.load_checkpoint(df)
-            print(f"📂 Resuming from checkpoint: Candle {start_index - LOOKBACK_WINDOW}/{total_candles}")
-        
-        for i in range(start_index, len(df)):
+        # Process each candle
+        for i in range(LOOKBACK_WINDOW, len(df)):
             current_row = df.iloc[i]
             current_price = current_row['close']
             timestamp = current_row.name
             candle_number = i - LOOKBACK_WINDOW + 1
             
-            # Show progress
-            if candle_number % 10 == 0:
-                elapsed = time.time() - start_time
-                progress_pct = (candle_number / total_candles) * 100
-                eta_seconds = (elapsed / candle_number) * (total_candles - candle_number)
-                eta_days = eta_seconds / 86400
+            # Show progress every 100 candles or every 30 seconds
+            current_time = time.time()
+            if candle_number % 100 == 0 or current_time - last_update_time >= 30:
+                elapsed = current_time - start_time
+                candles_per_second = candle_number / elapsed if elapsed > 0 else 0
+                estimated_total = elapsed / candle_number * total_candles if candle_number > 0 else 0
+                remaining = estimated_total - elapsed
                 
-                # Count time-limited exits
-                time_exits = sum(1 for trade in self.trades if trade.get('exit_reason') == 'TIME_LIMIT_24H')
-                
-                print(f"📊 Candle {candle_number:,}/{total_candles:,} "
-                      f"({progress_pct:.3f}%) - "
-                      f"Elapsed: {elapsed/3600:.1f}h - "
-                      f"ETA: {eta_days:.1f} days - "
-                      f"API Calls: {self.signals_processed} - "
-                      f"Trades: {len(self.trades)} - "
-                      f"Time Exits: {time_exits}")
+                print(f"📊 Candle {candle_number}/{total_candles} "
+                      f"({candle_number/total_candles*100:.1f}%) - "
+                      f"Elapsed: {elapsed:.0f}s - "
+                      f"ETA: {remaining:.0f}s - "
+                      f"Speed: {candles_per_second:.2f} candles/s - "
+                      f"API Calls: {api_call_count} - "
+                      f"Open Trades: {len(self.open_trades)} - "
+                      f"Closed Trades: {len(self.trades)}")
+                last_update_time = current_time
             
-            # Check exits and execute new trade
+            # Check exit conditions for ALL open trades first
             self.check_exit_conditions_all(current_price, timestamp)
             
+            # Get new signal for EVERY candle (regardless of open positions)
             ohlc_data = self.prepare_ohlc_data(df, i)
             signal = self.deepseek_client.get_trading_signal(ohlc_data)
-            self.signals_processed += 1
+            api_call_count += 1
             
+            # Show API call progress every 10 calls
+            if api_call_count % 10 == 0:
+                elapsed = time.time() - start_time
+                print(f"📡 API Call {api_call_count}: {signal['signal']} signal "
+                      f"(Candle {candle_number}, {elapsed:.0f}s elapsed)")
+            
+            # Execute trade for EVERY signal (parallel trading)
             self.execute_trade_parallel(signal, current_price, timestamp)
-            
-            # Save checkpoint every N candles
-            if candle_number % self.checkpoint_interval == 0:
-                self.save_checkpoint(i, df)
+            trade_count += 1
         
-        # Final cleanup
+        # Close all remaining open trades at the end
         self.close_all_trades(df.iloc[-1]['close'], df.index[-1])
-        self.save_final_results(start_time)
+        
+        end_time = time.time()
+        total_time = end_time - start_time
+        hours = total_time / 3600
+        minutes = total_time / 60
+        
+        print("=" * 60)
+        print("🏁 Parallel Backtest Completed!")
+        print("=" * 60)
+        print(f"⏰ Total time: {total_time:.0f} seconds ({minutes:.1f} minutes, {hours:.2f} hours)")
+        print(f"📞 API calls made: {api_call_count}")
+        print(f"📊 Candles processed: {total_candles}")
+        print(f"💰 Signals generated: {trade_count}")
+        print(f"📈 Trades executed: {len(self.trades)}")
+        print(f"⚡ Processing speed: {total_candles/total_time:.2f} candles/second")
+        print(f"📊 API call rate: {api_call_count/total_time:.2f} calls/second")
+        print(f"💵 Final balance: ${self.balance:,.2f}")
+        print(f"💰 PnL: ${self.balance - self.initial_balance:,.2f}")
+        print(f"📈 Return: {(self.balance - self.initial_balance)/self.initial_balance*100:.2f}%")
     
     def execute_trade_parallel(self, signal, current_price, timestamp):
-        """Execute trade for every signal"""
-        if signal['signal'] == 'BUY' and self.balance > 100:
-            trade_amount = min(self.balance * TRADE_SIZE, self.balance)
+        """Execute trade for every signal (parallel trading)"""
+        if signal['signal'] == 'BUY':
+            trade_amount = self.balance * TRADE_SIZE
+            if trade_amount > self.balance:
+                print("❌ Insufficient balance for BUY")
+                return
+                
             btc_amount = trade_amount / current_price
             
-            trade_id = f"trade_{len(self.trades) + len(self.open_trades) + 1}"
+            trade_id = f"trade_{len(self.trades) + len(self.open_trades) + 1}_{timestamp.strftime('%Y%m%d_%H%M')}"
             
             trade = {
                 'id': trade_id,
                 'type': 'LONG',
                 'entry_price': current_price,
                 'entry_time': timestamp,
-                'stop_price': float(signal['stop_price']) if signal['stop_price'] else current_price * 0.95,
-                'target_price': float(signal['target_price']) if signal['target_price'] else current_price * 1.05,
+                'stop_price': signal['stop_price'],
+                'target_price': signal['target_price'],
                 'size': trade_amount,
                 'btc_amount': btc_amount,
                 'signal_confidence': signal['confidence'],
-                'signal_reason': signal.get('reason', '')
+                'signal_reason': signal['reason']
             }
             
             self.balance -= trade_amount * (1 + COMMISSION)
             self.open_trades.append(trade)
             
-        elif signal['signal'] == 'SELL' and self.balance > 100:
+            print(f"🎯 LONG executed at ${current_price:.2f}")
+            print(f"   📋 ID: {trade_id}")
+            print(f"   ⛔ Stop: ${signal['stop_price']:.2f}")
+            print(f"   🎯 Target: ${signal['target_price']:.2f}")
+            print(f"   ✅ Confidence: {signal['confidence']}%")
+            print(f"   💰 Size: ${trade_amount:,.2f}")
+            print("-" * 50)
+            
+        elif signal['signal'] == 'SELL':
             trade_amount = self.balance * TRADE_SIZE
             btc_amount = trade_amount / current_price
             
-            trade_id = f"trade_{len(self.trades) + len(self.open_trades) + 1}"
+            trade_id = f"trade_{len(self.trades) + len(self.open_trades) + 1}_{timestamp.strftime('%Y%m%d_%H%M')}"
             
             trade = {
                 'id': trade_id,
                 'type': 'SHORT',
                 'entry_price': current_price,
                 'entry_time': timestamp,
-                'stop_price': float(signal['stop_price']) if signal['stop_price'] else current_price * 1.05,
-                'target_price': float(signal['target_price']) if signal['target_price'] else current_price * 0.95,
+                'stop_price': signal['stop_price'],
+                'target_price': signal['target_price'],
                 'size': trade_amount,
                 'btc_amount': btc_amount,
                 'signal_confidence': signal['confidence'],
-                'signal_reason': signal.get('reason', '')
+                'signal_reason': signal['reason']
             }
             
             self.balance -= trade_amount * COMMISSION
             self.open_trades.append(trade)
+            
+            print(f"🎯 SHORT executed at ${current_price:.2f}")
+            print(f"   📋 ID: {trade_id}")
+            print(f"   ⛔ Stop: ${signal['stop_price']:.2f}")
+            print(f"   🎯 Target: ${signal['target_price']:.2f}")
+            print(f"   ✅ Confidence: {signal['confidence']}%")
+            print(f"   💰 Size: ${trade_amount:,.2f}")
+            print("-" * 50)
     
     def check_exit_conditions_all(self, current_price, timestamp):
-        """Check exit conditions for ALL open trades including time limit"""
+        """Check exit conditions for ALL open trades"""
         trades_to_remove = []
         
         for trade in self.open_trades:
             should_exit = False
             exit_reason = ""
             
-            # Calculate trade duration in hours
-            entry_time = trade['entry_time']
-            trade_duration_hours = (timestamp - entry_time).total_seconds() / 3600
-            
-            # Time-based exit (24 hours)
-            if trade_duration_hours >= 24:
-                should_exit = True
-                exit_reason = 'TIME_LIMIT_24H'
-            
-            # Price-based exits
-            elif trade['type'] == 'LONG':
+            if trade['type'] == 'LONG':
                 if current_price <= trade['stop_price']:
                     should_exit = True
                     exit_reason = 'STOP_LOSS'
@@ -203,8 +248,6 @@ class Backtester:
                     exit_reason = 'TARGET'
             
             if should_exit:
-                # Add duration to trade info before closing
-                trade['duration_hours'] = trade_duration_hours
                 self.exit_trade_parallel(trade, current_price, timestamp, exit_reason)
                 trades_to_remove.append(trade)
         
@@ -214,10 +257,6 @@ class Backtester:
     
     def exit_trade_parallel(self, trade, exit_price, timestamp, exit_reason):
         """Exit a parallel trade"""
-        # Calculate final duration
-        entry_time = trade['entry_time']
-        duration_hours = (timestamp - entry_time).total_seconds() / 3600
-        
         if trade['type'] == 'LONG':
             exit_value = trade['btc_amount'] * exit_price
             pnl = exit_value - trade['size']
@@ -235,8 +274,8 @@ class Backtester:
         # Record trade
         trade_record = {
             'id': trade['id'],
-            'entry_time': entry_time.isoformat(),
-            'exit_time': timestamp.isoformat(),
+            'entry_time': trade['entry_time'],
+            'exit_time': timestamp,
             'type': trade['type'],
             'entry_price': trade['entry_price'],
             'exit_price': exit_price,
@@ -244,109 +283,67 @@ class Backtester:
             'pnl': pnl,
             'pnl_percent': pnl_percent,
             'exit_reason': exit_reason,
-            'duration_hours': duration_hours,
+            'duration': (timestamp - trade['entry_time']).total_seconds() / 3600,
             'signal_confidence': trade.get('signal_confidence', 0),
             'signal_reason': trade.get('signal_reason', '')
         }
         
         self.trades.append(trade_record)
         
-        # Only print if it's a time limit exit to reduce noise
-        if exit_reason == 'TIME_LIMIT_24H':
-            print(f"⏰ Trade CLOSED: {exit_reason} after {duration_hours:.1f}h")
-            print(f"   📋 ID: {trade['id']}")
-            print(f"   🔄 Type: {trade['type']}")
-            print(f"   📈 Entry: ${trade['entry_price']:.2f}")
-            print(f"   📉 Exit: ${exit_price:.2f}")
-            print(f"   💰 PnL: ${pnl:+.2f} ({pnl_percent:+.2f}%)")
-            print("=" * 50)
+        print(f"📊 Trade CLOSED: {exit_reason}")
+        print(f"   📋 ID: {trade['id']}")
+        print(f"   🔄 Type: {trade['type']}")
+        print(f"   📈 Entry: ${trade['entry_price']:.2f}")
+        print(f"   📉 Exit: ${exit_price:.2f}")
+        print(f"   💰 PnL: ${pnl:+.2f} ({pnl_percent:+.2f}%)")
+        print(f"   ⏱️  Duration: {trade_record['duration']:.1f}h")
+        print(f"   ✅ Signal Confidence: {trade.get('signal_confidence', 0)}%")
+        print("=" * 50)
     
     def close_all_trades(self, exit_price, timestamp):
-        """Close all remaining trades"""
-        for trade in self.open_trades[:]:
-            # Add duration before closing
-            entry_time = trade['entry_time']
-            trade_duration_hours = (timestamp - entry_time).total_seconds() / 3600
-            trade['duration_hours'] = trade_duration_hours
+        """Close all remaining open trades at end of backtest"""
+        print(f"🔚 Closing {len(self.open_trades)} remaining trades...")
+        for trade in self.open_trades[:]:  # Copy list for iteration
             self.exit_trade_parallel(trade, exit_price, timestamp, 'END_OF_DATA')
             self.open_trades.remove(trade)
     
-    def save_checkpoint(self, current_index, df):
-        """Save progress checkpoint"""
-        checkpoint_data = {
-            'current_index': current_index,
-            'balance': self.balance,
-            'signals_processed': self.signals_processed,
-            'total_trades': len(self.trades),
-            'open_trades_count': len(self.open_trades),
-            'timestamp': datetime.now().isoformat()
-        }
+    def generate_stats(self):
+        """Generate performance statistics"""
+        if not self.trades:
+            return {"error": "No trades executed"}
         
-        with open(self.checkpoint_file, 'w') as f:
-            json.dump(checkpoint_data, f, indent=2)
+        trades_df = pd.DataFrame(self.trades)
         
-        print(f"💾 Checkpoint saved at candle {current_index - LOOKBACK_WINDOW}")
-    
-    def load_checkpoint(self, df):
-        """Load progress checkpoint"""
-        try:
-            with open(self.checkpoint_file, 'r') as f:
-                data = json.load(f)
-            
-            print(f"📂 Loaded checkpoint from {data['timestamp']}")
-            self.balance = data['balance']
-            self.signals_processed = data['signals_processed']
-            
-            return data['current_index']
-        except:
-            return LOOKBACK_WINDOW
-    
-    def save_final_results(self, start_time):
-        """Save final results"""
-        total_time = time.time() - start_time
+        # Basic stats
+        total_pnl = trades_df['pnl'].sum()
+        total_return = (self.balance - self.initial_balance) / self.initial_balance * 100
         
-        # Calculate time exit statistics
-        time_exits = [t for t in self.trades if t['exit_reason'] == 'TIME_LIMIT_24H']
-        stop_loss_exits = [t for t in self.trades if t['exit_reason'] == 'STOP_LOSS']
-        target_exits = [t for t in self.trades if t['exit_reason'] == 'TARGET']
-        end_exits = [t for t in self.trades if t['exit_reason'] == 'END_OF_DATA']
+        winning_trades = trades_df[trades_df['pnl'] > 0]
+        win_rate = len(winning_trades) / len(trades_df) * 100
         
-        results = {
-            'total_time_seconds': total_time,
-            'total_time_hours': total_time / 3600,
-            'total_time_days': total_time / 86400,
+        stats = {
             'initial_balance': self.initial_balance,
             'final_balance': self.balance,
-            'total_return': self.balance - self.initial_balance,
-            'return_percentage': (self.balance - self.initial_balance) / self.initial_balance * 100,
-            'total_signals': self.signals_processed,
-            'total_trades': len(self.trades),
-            'time_limit_exits': len(time_exits),
-            'stop_loss_exits': len(stop_loss_exits),
-            'target_exits': len(target_exits),
-            'end_of_data_exits': len(end_exits),
-            'api_call_rate': self.signals_processed / total_time if total_time > 0 else 0,
-            'completion_time': datetime.now().isoformat()
+            'total_return_usdt': total_pnl,
+            'total_return_percent': total_return,
+            'total_trades': len(trades_df),
+            'winning_trades': len(winning_trades),
+            'win_rate': win_rate,
+            'signals_processed': self.signals_processed,
+            'api_errors': self.api_errors
         }
         
-        with open('final_results.json', 'w') as f:
-            json.dump(results, f, indent=2)
-        
-        # Save trades to CSV for analysis
-        trades_df = pd.DataFrame(self.trades)
-        if len(trades_df) > 0:
-            trades_df.to_csv('all_trades.csv', index=False)
-        
-        print("=" * 60)
-        print("🏁 BACKTEST COMPLETED!")
-        print("=" * 60)
-        print(f"⏰ Total time: {total_time/86400:.2f} days")
-        print(f"📞 API calls: {self.signals_processed:,}")
-        print(f"💰 Final balance: ${self.balance:,.2f}")
-        print(f"📈 PnL: ${self.balance - self.initial_balance:,.2f}")
-        print(f"📊 Return: {(self.balance - self.initial_balance)/self.initial_balance*100:.2f}%")
-        print(f"🔁 Trades executed: {len(self.trades):,}")
-        print(f"⏰ Time limit exits: {len(time_exits):,}")
-        print(f"⛔ Stop loss exits: {len(stop_loss_exits):,}")
-        print(f"🎯 Target exits: {len(target_exits):,}")
-        print("💾 Results saved to final_results.json and all_trades.csv")
+        return stats
+    
+    def print_stats(self, stats):
+        """Print formatted statistics"""
+        print("\n" + "="*50)
+        print("BACKTEST RESULTS")
+        print("="*50)
+        print(f"Initial Balance: ${stats['initial_balance']:,.2f}")
+        print(f"Final Balance: ${stats['final_balance']:,.2f}")
+        print(f"Total Return: ${stats['total_return_usdt']:,.2f} ({stats['total_return_percent']:.2f}%)")
+        print(f"Total Trades: {stats['total_trades']}")
+        print(f"Win Rate: {stats['win_rate']:.1f}%")
+        print(f"Signals Processed: {stats['signals_processed']}")
+        print(f"API Errors: {stats['api_errors']}")
